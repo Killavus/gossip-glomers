@@ -16,14 +16,6 @@ enum EchoServer {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct Message {
-    src: String,
-    #[serde(rename = "dest")]
-    dst: String,
-    body: MessageBody,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
 enum EchoBodyIn {
     #[serde(rename = "echo")]
@@ -44,8 +36,6 @@ impl EchoServer {
 
         for line in io::stdin().lines() {
             let line = line.context("failed to read line from stdin")?;
-            let msg: Message =
-                serde_json::from_str(&line).context("Failed to parse line - got {line}")?;
 
             match self {
                 NotStarted => {
