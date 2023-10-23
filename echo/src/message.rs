@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct InMessage<In> {
+pub struct Message<In> {
     src: String,
     #[serde(rename = "dest")]
     dst: String,
@@ -16,19 +16,11 @@ struct MessageBody<D> {
     data: D,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct OutMessage<Out> {
-    src: String,
-    #[serde(rename = "dest")]
-    dst: String,
-    body: MessageBody<Out>,
-}
-
-impl<In> InMessage<In> {
-    pub fn into_reply<Out>(self, msg_id: Option<u64>, data: Out) -> OutMessage<Out> {
-        OutMessage {
-            src: self.dst.clone(),
-            dst: self.src.clone(),
+impl<In> Message<In> {
+    pub fn into_reply<Out>(self, msg_id: Option<u64>, data: Out) -> Message<Out> {
+        Message {
+            src: self.dst,
+            dst: self.src,
             body: MessageBody {
                 msg_id,
                 in_reply_to: self.body.msg_id,
@@ -41,10 +33,10 @@ impl<In> InMessage<In> {
         self,
         msg_id: Option<u64>,
         data_fn: F,
-    ) -> OutMessage<Out> {
-        OutMessage {
-            src: self.dst.clone(),
-            dst: self.src.clone(),
+    ) -> Message<Out> {
+        Message {
+            src: self.dst,
+            dst: self.src,
             body: MessageBody {
                 msg_id,
                 in_reply_to: self.body.msg_id,
@@ -66,11 +58,4 @@ pub enum UninitMessageIn {
         node_id: String,
         node_ids: Vec<String>,
     },
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(tag = "type")]
-pub enum UninitMessageOut {
-    #[serde(rename = "init_ok")]
-    InitOk {},
 }
