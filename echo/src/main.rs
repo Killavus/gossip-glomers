@@ -1,6 +1,10 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+mod message;
+
+use message::{InMessage, UninitMessageIn, UninitMessageOut};
+
 #[derive(Debug, Default)]
 enum EchoServer {
     #[default]
@@ -21,27 +25,16 @@ struct Message {
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
-enum MessageBody {
-    #[serde(rename = "init")]
-    Init {
-        msg_id: Option<serde_json::Value>,
-        node_id: String,
-        node_ids: Vec<String>,
-    },
-    #[serde(rename = "init_ok")]
-    InitOk {
-        in_reply_to: Option<serde_json::Value>,
-    },
+enum EchoBodyIn {
     #[serde(rename = "echo")]
-    Echo {
-        msg_id: Option<serde_json::Value>,
-        echo: String,
-    },
+    Echo { echo: String },
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(tag = "type")]
+enum EchoBodyOut {
     #[serde(rename = "echo_ok")]
-    EchoOk {
-        in_reply_to: Option<serde_json::Value>,
-        echo: String,
-    },
+    EchoOk { echo: String },
 }
 
 impl EchoServer {
@@ -56,41 +49,31 @@ impl EchoServer {
 
             match self {
                 NotStarted => {
-                    if let MessageBody::Init {
-                        msg_id,
-                        node_id,
-                        node_ids,
-                    } = msg.body
-                    {
-                        let reply = Message {
-                            src: node_id.clone(),
-                            dst: msg.src.clone(),
-                            body: MessageBody::InitOk {
-                                in_reply_to: msg_id,
-                            },
-                        };
+                    let msg: InMessage<UninitMessageIn> =
+                        serde_json::from_str(&line).context("Failed to parse line - got {line}")?;
+                    let UninitMessageIn::Init { node_id, node_ids } = msg.data();
 
-                        *self = Started {
-                            id: node_id,
-                            neighbours: node_ids,
-                        };
+                    *self = Self::Started {
+                        id: node_id.clone(),
+                        neighbours: node_ids.clone(),
+                    };
 
-                        println!("{}", serde_json::to_string(&reply)?);
-                    }
+                    println!(
+                        "{}",
+                        serde_json::to_value(msg.into_reply(None, UninitMessageOut::InitOk {}))?
+                    );
                 }
                 Started { .. } => {
-                    if let MessageBody::Echo { msg_id, echo } = msg.body {
-                        let reply = Message {
-                            src: msg.dst.clone(),
-                            dst: msg.src.clone(),
-                            body: MessageBody::EchoOk {
-                                in_reply_to: msg_id,
-                                echo: echo.clone(),
-                            },
-                        };
+                    let msg: InMessage<EchoBodyIn> =
+                        serde_json::from_str(&line).context("Failed to parse line - got {line}")?;
 
-                        println!("{}", serde_json::to_value(&reply)?);
-                    }
+                    println!(
+                        "{}",
+                        serde_json::to_value(msg.into_reply_with(None, |data| {
+                            let EchoBodyIn::Echo { echo } = data;
+                            EchoBodyOut::EchoOk { echo }
+                        }))?
+                    );
                 }
             }
         }
