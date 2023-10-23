@@ -1,11 +1,5 @@
 use anyhow::{Context, Result};
-use client::Client;
 use serde::{Deserialize, Serialize};
-
-mod client;
-mod message;
-
-use message::Message;
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
@@ -24,8 +18,12 @@ enum EchoBodyOut {
 #[derive(Default)]
 struct Echo {}
 
-impl client::ClientImpl<EchoBodyIn> for Echo {
-    fn on_msg(&mut self, msg: Message<EchoBodyIn>, client: &Client) -> Result<()> {
+impl maelstrom::ClientImpl<EchoBodyIn> for Echo {
+    fn on_msg(
+        &mut self,
+        msg: maelstrom::Message<EchoBodyIn>,
+        client: &maelstrom::Client,
+    ) -> Result<()> {
         println!(
             "{}",
             serde_json::to_value(client.reply_with(msg, |data| {
@@ -39,7 +37,7 @@ impl client::ClientImpl<EchoBodyIn> for Echo {
 }
 
 fn main() -> Result<()> {
-    let mut client = Client::default();
+    let mut client = maelstrom::Client::default();
     client.init().context("Error while initializing client")?;
     client.run(Echo {}).context("Error while running client")?;
 

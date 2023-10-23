@@ -56,7 +56,7 @@ impl Client {
         let line = line.trim();
 
         let msg: Message<UninitMessageIn> =
-            serde_json::from_str(&line).context("Failed to parse init message - got {line}")?;
+            serde_json::from_str(line).context("Failed to parse init message - got {line}")?;
 
         let reply = msg.into_reply_with(
             self.next_id(),
