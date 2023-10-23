@@ -10,8 +10,8 @@ pub struct InMessage<In> {
 
 #[derive(Serialize, Deserialize, Debug)]
 struct MessageBody<D> {
-    msg_id: Option<serde_json::Value>,
-    in_reply_to: Option<serde_json::Value>,
+    msg_id: Option<u64>,
+    in_reply_to: Option<u64>,
     #[serde(flatten)]
     data: D,
 }
@@ -25,19 +25,7 @@ pub struct OutMessage<Out> {
 }
 
 impl<In> InMessage<In> {
-    pub fn reply<Out>(&self, msg_id: Option<serde_json::Value>, data: Out) -> OutMessage<Out> {
-        OutMessage {
-            src: self.dst.clone(),
-            dst: self.src.clone(),
-            body: MessageBody {
-                msg_id,
-                in_reply_to: self.body.msg_id.clone(),
-                data,
-            },
-        }
-    }
-
-    pub fn into_reply<Out>(self, msg_id: Option<serde_json::Value>, data: Out) -> OutMessage<Out> {
+    pub fn into_reply<Out>(self, msg_id: Option<u64>, data: Out) -> OutMessage<Out> {
         OutMessage {
             src: self.dst.clone(),
             dst: self.src.clone(),
@@ -51,7 +39,7 @@ impl<In> InMessage<In> {
 
     pub fn into_reply_with<Out, F: FnOnce(In) -> Out>(
         self,
-        msg_id: Option<serde_json::Value>,
+        msg_id: Option<u64>,
         data_fn: F,
     ) -> OutMessage<Out> {
         OutMessage {

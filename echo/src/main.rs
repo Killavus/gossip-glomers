@@ -6,13 +6,16 @@ mod message;
 use message::{InMessage, UninitMessageIn, UninitMessageOut};
 
 #[derive(Debug, Default)]
-enum EchoServer {
+struct Echo {
+    next_id: u64,
+    state: ServerState,
+}
+
+#[derive(Debug, Default)]
+enum ServerState {
     #[default]
     NotStarted,
-    Started {
-        id: String,
-        neighbours: Vec<String>,
-    },
+    Started,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -29,28 +32,27 @@ enum EchoBodyOut {
     EchoOk { echo: String },
 }
 
-impl EchoServer {
+impl Echo {
     fn run(&mut self) -> Result<()> {
         use std::io;
-        use EchoServer::*;
+        use ServerState::*;
 
         for line in io::stdin().lines() {
             let line = line.context("failed to read line from stdin")?;
 
-            match self {
+            match self.state {
                 NotStarted => {
                     let msg: InMessage<UninitMessageIn> =
                         serde_json::from_str(&line).context("Failed to parse line - got {line}")?;
-                    let UninitMessageIn::Init { node_id, node_ids } = msg.data();
+                    let UninitMessageIn::Init { .. } = msg.data();
 
-                    *self = Self::Started {
-                        id: node_id.clone(),
-                        neighbours: node_ids.clone(),
-                    };
+                    self.state = ServerState::Started;
 
                     println!(
                         "{}",
-                        serde_json::to_value(msg.into_reply(None, UninitMessageOut::InitOk {}))?
+                        serde_json::to_value(
+                            msg.into_reply(self.next_id(), UninitMessageOut::InitOk {})
+                        )?
                     );
                 }
                 Started { .. } => {
@@ -59,7 +61,7 @@ impl EchoServer {
 
                     println!(
                         "{}",
-                        serde_json::to_value(msg.into_reply_with(None, |data| {
+                        serde_json::to_value(msg.into_reply_with(self.next_id(), |data| {
                             let EchoBodyIn::Echo { echo } = data;
                             EchoBodyOut::EchoOk { echo }
                         }))?
@@ -70,10 +72,15 @@ impl EchoServer {
 
         Ok(())
     }
+
+    fn next_id(&mut self) -> Option<u64> {
+        self.next_id += 1;
+        Some(self.next_id)
+    }
 }
 
 fn main() -> Result<()> {
-    let mut server = EchoServer::default();
+    let mut server = Echo::default();
 
     server.run()?;
 
