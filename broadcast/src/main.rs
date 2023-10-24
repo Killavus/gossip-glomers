@@ -226,7 +226,7 @@ async fn main() -> Result<()> {
     {
         let client = client.clone();
         let messages = messages.clone();
-        let topology = topology.clone();
+        let topology: Arc<Mutex<Option<HashMap<String, Instant>>>> = topology.clone();
 
         out_msg = tokio::spawn(async move {
             while let Some(msg) = out_rx.recv().await {
@@ -237,16 +237,49 @@ async fn main() -> Result<()> {
         });
     }
 
+    let (quit_tx, mut quit_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let read_poll: JoinHandle<Result<()>>;
+    {
+        let client = client.clone();
+        let topology: Arc<Mutex<Option<HashMap<String, Instant>>>> = topology.clone();
+
+        read_poll = tokio::spawn(async move {
+            use tokio::time::{timeout, Duration};
+
+            while timeout(Duration::from_secs_f32(0.5), &mut quit_rx)
+                .await
+                .is_err()
+            {
+                let guard = topology.lock().unwrap();
+
+                for (node, last_time) in guard.as_ref().unwrap() {
+                    if last_time.elapsed() > Duration::from_secs_f32(1.0) {
+                        let msg = client.send_to(node, MessageIn::Read {});
+                        println!("{}", serde_json::to_value(msg)?);
+                    }
+                }
+            }
+
+            Ok(())
+        })
+    }
+
     let run_client: JoinHandle<Result<()>> = tokio::task::spawn_blocking(move || {
         client
             .run(broadcast)
             .context("Error while processing client requests")?;
+        quit_tx
+            .send(())
+            .map_err(|_| anyhow::anyhow!("Failed to tear down read poll task"))?;
+
         Ok(())
     });
 
-    let (i, o, c) = tokio::try_join!(in_msg, out_msg, run_client)?;
+    let (i, o, p, c) = tokio::try_join!(in_msg, out_msg, read_poll, run_client)?;
     i?;
     o?;
+    p?;
     c?;
 
     Ok(())
