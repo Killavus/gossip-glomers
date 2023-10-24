@@ -19,11 +19,11 @@ struct Broadcast {
 #[serde(tag = "type")]
 enum MessageIn {
     #[serde(rename = "broadcast")]
-    Broadcast { message: u64 },
-    #[serde(rename = "rebroadcast")]
-    Rebroadcast {
+    Broadcast {
         message: u64,
-        visited: HashSet<String>,
+    },
+    Gossip {
+        messages: HashSet<u64>,
     },
     #[serde(rename = "read")]
     Read {},
@@ -42,6 +42,8 @@ enum MessageOut {
     Read { messages: HashSet<u64> },
     #[serde(rename = "topology_ok")]
     Topology {},
+    #[serde(rename = "gossip_ok")]
+    GossipOk { messages: HashSet<u64> },
 }
 
 impl ClientImpl<MessageIn, MessageOut> for Broadcast {
@@ -72,64 +74,31 @@ fn process_in_msg(
     topology: Arc<Mutex<Topology>>,
 ) -> Result<()> {
     match msg.data() {
+        MessageIn::Gossip {
+            messages: in_messages,
+        } => {
+            messages.lock().unwrap().extend(in_messages);
+
+            println!(
+                "{}",
+                serde_json::to_value(client.reply(
+                    msg,
+                    MessageOut::GossipOk {
+                        messages: messages.lock().unwrap().clone()
+                    }
+                ))?
+            )
+        }
         MessageIn::Broadcast { message } => {
-            {
-                let mut messages = messages
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("Failed to lock messages"))?;
-                messages.insert(*message);
-            }
-
-            let guard = topology.lock().unwrap();
-            let topology: &HashMap<String, Instant> = guard.as_ref().unwrap();
-            let neighbors = topology.keys().collect::<HashSet<_>>();
-            let mut visited = topology.keys().cloned().collect::<HashSet<_>>();
-            visited.insert(client.node_id().to_owned());
-            visited.extend(topology.keys().cloned());
-
-            for node in neighbors {
-                let msg = client.send_to(
-                    node,
-                    MessageIn::Rebroadcast {
-                        message: *message,
-                        visited: visited.clone(),
-                    },
-                );
-                println!("{}", serde_json::to_value(msg)?);
-            }
+            let mut messages = messages
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Failed to lock messages"))?;
+            messages.insert(*message);
 
             println!(
                 "{}",
                 serde_json::to_value(client.reply(msg, MessageOut::Broadcast {}))?
             );
-        }
-        MessageIn::Rebroadcast { message, visited } => {
-            {
-                let mut messages = messages
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("Failed to lock messages"))?;
-                messages.insert(*message);
-            }
-
-            let mut visited_nodes: HashSet<String> = visited.clone();
-
-            let guard = topology.lock().unwrap();
-            let topology: &HashMap<String, Instant> = guard.as_ref().unwrap();
-            let neighbors = topology.keys().cloned().collect::<HashSet<_>>();
-
-            visited_nodes.insert(client.node_id().to_owned());
-            visited_nodes.extend(topology.keys().cloned());
-
-            for node in neighbors.difference(visited) {
-                let msg = client.send_to(
-                    node,
-                    MessageIn::Rebroadcast {
-                        message: *message,
-                        visited: visited_nodes.clone(),
-                    },
-                );
-                println!("{}", serde_json::to_value(msg)?);
-            }
         }
         MessageIn::Read {} => {
             println!(
@@ -172,18 +141,14 @@ fn process_out_msg(
     msg: Message<MessageOut>,
     _client: Arc<Client>,
     messages: Arc<Mutex<HashSet<u64>>>,
-    topology: Arc<Mutex<Topology>>,
 ) -> Result<()> {
     if let MessageOut::Read {
         messages: in_messages,
+    }
+    | MessageOut::GossipOk {
+        messages: in_messages,
     } = msg.data()
     {
-        {
-            let mut guard = topology.lock().unwrap();
-            let topology = guard.as_mut().unwrap();
-            *topology.get_mut(msg.src()).unwrap() = Instant::now();
-        }
-
         messages.lock().unwrap().extend(in_messages);
     }
 
@@ -226,11 +191,10 @@ async fn main() -> Result<()> {
     {
         let client = client.clone();
         let messages = messages.clone();
-        let topology: Arc<Mutex<Option<HashMap<String, Instant>>>> = topology.clone();
 
         out_msg = tokio::spawn(async move {
             while let Some(msg) = out_rx.recv().await {
-                process_out_msg(msg, client.clone(), messages.clone(), topology.clone())?;
+                process_out_msg(msg, client.clone(), messages.clone())?;
             }
 
             Ok(())
@@ -242,22 +206,28 @@ async fn main() -> Result<()> {
     let read_poll: JoinHandle<Result<()>>;
     {
         let client = client.clone();
-        let topology: Arc<Mutex<Option<HashMap<String, Instant>>>> = topology.clone();
 
         read_poll = tokio::spawn(async move {
             use tokio::time::{timeout, Duration};
 
-            while timeout(Duration::from_secs_f32(0.5), &mut quit_rx)
+            while timeout(Duration::from_secs_f32(0.25), &mut quit_rx)
                 .await
                 .is_err()
             {
-                let guard = topology.lock().unwrap();
+                use rand::{prelude::*, Rng};
+                let mut rng = rand::thread_rng();
 
-                for (node, last_time) in guard.as_ref().unwrap() {
-                    if last_time.elapsed() > Duration::from_secs_f32(1.0) {
-                        let msg = client.send_to(node, MessageIn::Read {});
-                        println!("{}", serde_json::to_value(msg)?);
-                    }
+                let samples = rng.gen_range(6..=client.node_ids().len() / 2);
+                let nodes = client.node_ids().choose_multiple(&mut rng, samples);
+
+                for node in nodes {
+                    let msg = client.send_to(
+                        node,
+                        MessageIn::Gossip {
+                            messages: messages.lock().unwrap().clone(),
+                        },
+                    );
+                    println!("{}", serde_json::to_value(msg)?);
                 }
             }
 

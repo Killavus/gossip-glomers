@@ -11,3 +11,4 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 maelstrom = { path = "../maelstrom" }
 tokio = { version = "1.33.0", features = ["full"] }
+rand = "0.8.5"

@@ -50,6 +50,13 @@ impl Client {
         }
     }
 
+    pub fn node_ids(&self) -> &Vec<String> {
+        match &self.state {
+            ClientState::Init { node_ids, .. } => node_ids,
+            _ => panic!("Client not initialized"),
+        }
+    }
+
     pub fn init(&mut self) -> Result<()> {
         if matches!(self.state, ClientState::Init { .. }) {
             anyhow::bail!("Client already initialized");
