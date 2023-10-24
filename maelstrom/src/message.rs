@@ -17,6 +17,22 @@ struct MessageBody<D> {
 }
 
 impl<In> Message<In> {
+    pub fn new(src: String, dst: String, msg_id: Option<u64>, data: In) -> Self {
+        Self {
+            src,
+            dst,
+            body: MessageBody {
+                msg_id,
+                in_reply_to: None,
+                data,
+            },
+        }
+    }
+
+    pub fn src(&self) -> &str {
+        &self.src
+    }
+
     pub fn into_reply<Out>(self, msg_id: Option<u64>, data: Out) -> Message<Out> {
         Message {
             src: self.dst,

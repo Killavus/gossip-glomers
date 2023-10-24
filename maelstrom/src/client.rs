@@ -31,8 +31,9 @@ pub enum ClientState {
     },
 }
 
-pub trait ClientImpl<In> {
+pub trait ClientImpl<In, Out> {
     fn on_msg(&mut self, msg: Message<In>, client: &Client) -> Result<()>;
+    fn on_reply(&mut self, msg: Message<Out>, client: &Client) -> Result<()>;
 }
 
 #[derive(Default)]
@@ -95,16 +96,32 @@ impl Client {
         Some(self.next_id.fetch_add(1, Ordering::AcqRel))
     }
 
-    pub fn run<In: DeserializeOwned>(&self, mut client_impl: impl ClientImpl<In>) -> Result<()> {
+    pub fn send_to<D>(&self, dst: &str, data: D) -> Message<D> {
+        Message::new(
+            self.node_id().to_owned(),
+            dst.to_owned(),
+            self.next_id(),
+            data,
+        )
+    }
+
+    pub fn run<In: DeserializeOwned, Out: DeserializeOwned>(
+        &self,
+        mut client_impl: impl ClientImpl<In, Out>,
+    ) -> Result<()> {
         use std::io;
 
         if let ClientState::Init { .. } = &self.state {
             for line in io::stdin().lines() {
                 let line = line.context("failed to read line")?;
-                let msg: Message<In> =
-                    serde_json::from_str(&line).context("Failed to parse message - got {line}")?;
+                let in_msg = serde_json::from_str(&line);
 
-                client_impl.on_msg(msg, self)?;
+                if let Ok(msg) = in_msg {
+                    client_impl.on_msg(msg, self)?;
+                } else {
+                    let out_msg: Message<Out> = serde_json::from_str(&line)?;
+                    client_impl.on_reply(out_msg, self)?;
+                }
             }
         } else {
             anyhow::bail!("Client not initialized - run init first");

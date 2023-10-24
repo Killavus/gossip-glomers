@@ -18,7 +18,7 @@ enum EchoBodyOut {
 #[derive(Default)]
 struct Echo {}
 
-impl maelstrom::ClientImpl<EchoBodyIn> for Echo {
+impl maelstrom::ClientImpl<EchoBodyIn, EchoBodyOut> for Echo {
     fn on_msg(
         &mut self,
         msg: maelstrom::Message<EchoBodyIn>,
@@ -32,6 +32,14 @@ impl maelstrom::ClientImpl<EchoBodyIn> for Echo {
             }))?
         );
 
+        Ok(())
+    }
+
+    fn on_reply(
+        &mut self,
+        _msg: maelstrom::Message<EchoBodyOut>,
+        _client: &maelstrom::Client,
+    ) -> Result<()> {
         Ok(())
     }
 }

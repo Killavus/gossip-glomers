@@ -21,7 +21,7 @@ struct UniqueId {
     id: u64,
 }
 
-impl ClientImpl<MessageIn> for UniqueId {
+impl ClientImpl<MessageIn, MessageOut> for UniqueId {
     fn on_msg(&mut self, msg: maelstrom::Message<MessageIn>, client: &Client) -> Result<()> {
         println!(
             "{}",
@@ -34,6 +34,14 @@ impl ClientImpl<MessageIn> for UniqueId {
             }))?
         );
 
+        Ok(())
+    }
+
+    fn on_reply(
+        &mut self,
+        _msg: maelstrom::Message<MessageOut>,
+        _client: &maelstrom::Client,
+    ) -> Result<()> {
         Ok(())
     }
 }
