@@ -210,7 +210,7 @@ async fn main() -> Result<()> {
         read_poll = tokio::spawn(async move {
             use tokio::time::{timeout, Duration};
 
-            while timeout(Duration::from_secs_f32(0.25), &mut quit_rx)
+            while timeout(Duration::from_secs_f32(0.66), &mut quit_rx)
                 .await
                 .is_err()
             {
