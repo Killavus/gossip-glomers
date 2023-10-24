@@ -3,10 +3,11 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{Context, Result};
 use maelstrom::{Client, ClientImpl, Message};
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use tokio::{
     sync::mpsc::{channel, Sender},
     task::JoinHandle,
+    time::Instant,
 };
 
 struct Broadcast {
@@ -18,10 +19,10 @@ struct Broadcast {
 #[serde(tag = "type")]
 enum MessageIn {
     #[serde(rename = "broadcast")]
-    Broadcast { message: serde_json::Value },
+    Broadcast { message: u64 },
     #[serde(rename = "rebroadcast")]
     Rebroadcast {
-        message: serde_json::Value,
+        message: u64,
         visited: HashSet<String>,
     },
     #[serde(rename = "read")]
@@ -38,7 +39,7 @@ enum MessageOut {
     #[serde(rename = "broadcast_ok")]
     Broadcast {},
     #[serde(rename = "read_ok")]
-    Read { messages: Vec<serde_json::Value> },
+    Read { messages: HashSet<u64> },
     #[serde(rename = "topology_ok")]
     Topology {},
 }
@@ -67,33 +68,30 @@ impl ClientImpl<MessageIn, MessageOut> for Broadcast {
 fn process_in_msg(
     msg: Message<MessageIn>,
     client: Arc<Client>,
-    messages: Arc<Mutex<Vec<serde_json::Value>>>,
-    topology: Arc<OnceLock<HashMap<String, HashSet<String>>>>,
+    messages: Arc<Mutex<HashSet<u64>>>,
+    topology: Arc<Mutex<Topology>>,
 ) -> Result<()> {
     match msg.data() {
         MessageIn::Broadcast { message } => {
-            let mut messages = messages
-                .lock()
-                .map_err(|_| anyhow::anyhow!("Failed to lock messages"))?;
-            messages.push(message.clone());
+            {
+                let mut messages = messages
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("Failed to lock messages"))?;
+                messages.insert(*message);
+            }
 
-            let topology = topology
-                .get()
-                .unwrap()
-                .get(client.node_id())
-                .ok_or(anyhow::anyhow!(
-                    "Failed to get topology for node {}",
-                    client.node_id()
-                ))?;
-
-            let mut visited = topology.clone();
+            let guard = topology.lock().unwrap();
+            let topology: &HashMap<String, Instant> = guard.as_ref().unwrap();
+            let neighbors = topology.keys().collect::<HashSet<_>>();
+            let mut visited = topology.keys().cloned().collect::<HashSet<_>>();
             visited.insert(client.node_id().to_owned());
+            visited.extend(topology.keys().cloned());
 
-            for node in topology {
+            for node in neighbors {
                 let msg = client.send_to(
                     node,
                     MessageIn::Rebroadcast {
-                        message: message.clone(),
+                        message: *message,
                         visited: visited.clone(),
                     },
                 );
@@ -106,29 +104,27 @@ fn process_in_msg(
             );
         }
         MessageIn::Rebroadcast { message, visited } => {
-            let mut messages = messages
-                .lock()
-                .map_err(|_| anyhow::anyhow!("Failed to lock messages"))?;
-            messages.push(message.clone());
+            {
+                let mut messages = messages
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("Failed to lock messages"))?;
+                messages.insert(*message);
+            }
+
             let mut visited_nodes: HashSet<String> = visited.clone();
 
-            let topology = topology
-                .get()
-                .unwrap()
-                .get(client.node_id())
-                .ok_or(anyhow::anyhow!(
-                    "Failed to get topology for node {}",
-                    client.node_id()
-                ))?;
+            let guard = topology.lock().unwrap();
+            let topology: &HashMap<String, Instant> = guard.as_ref().unwrap();
+            let neighbors = topology.keys().cloned().collect::<HashSet<_>>();
 
             visited_nodes.insert(client.node_id().to_owned());
-            visited_nodes.extend(topology.iter().map(|n| n.to_owned()));
+            visited_nodes.extend(topology.keys().cloned());
 
-            for node in topology.difference(visited) {
+            for node in neighbors.difference(visited) {
                 let msg = client.send_to(
                     node,
                     MessageIn::Rebroadcast {
-                        message: message.clone(),
+                        message: *message,
                         visited: visited_nodes.clone(),
                     },
                 );
@@ -149,7 +145,18 @@ fn process_in_msg(
         MessageIn::Topology {
             topology: in_topology,
         } => {
-            topology.set(in_topology.clone()).ok();
+            let in_topology = in_topology.get(client.node_id()).ok_or(anyhow::anyhow!(
+                "Failed to get topology for node {}",
+                client.node_id()
+            ))?;
+
+            let node_topology: HashMap<String, Instant> = in_topology
+                .iter()
+                .cloned()
+                .map(|n| (n, Instant::now()))
+                .collect::<HashMap<_, _>>();
+
+            *(topology.lock().unwrap()) = Some(node_topology);
 
             println!(
                 "{}",
@@ -162,13 +169,28 @@ fn process_in_msg(
 }
 
 fn process_out_msg(
-    _msg: Message<MessageOut>,
+    msg: Message<MessageOut>,
     _client: Arc<Client>,
-    _messages: Arc<Mutex<Vec<serde_json::Value>>>,
-    _topology: Arc<OnceLock<HashMap<String, HashSet<String>>>>,
+    messages: Arc<Mutex<HashSet<u64>>>,
+    topology: Arc<Mutex<Topology>>,
 ) -> Result<()> {
+    if let MessageOut::Read {
+        messages: in_messages,
+    } = msg.data()
+    {
+        {
+            let mut guard = topology.lock().unwrap();
+            let topology = guard.as_mut().unwrap();
+            *topology.get_mut(msg.src()).unwrap() = Instant::now();
+        }
+
+        messages.lock().unwrap().extend(in_messages);
+    }
+
     Ok(())
 }
+
+type Topology = Option<HashMap<String, Instant>>;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -176,8 +198,8 @@ async fn main() -> Result<()> {
     let (in_chan, mut in_rx) = channel(128);
     let (out_chan, mut out_rx) = channel(128);
 
-    let topology = Arc::new(OnceLock::<HashMap<String, HashSet<String>>>::new());
-    let messages = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+    let topology = Arc::new(Mutex::new(None));
+    let messages = Arc::new(Mutex::new(HashSet::new()));
 
     let broadcast = Broadcast { in_chan, out_chan };
 
@@ -185,29 +207,35 @@ async fn main() -> Result<()> {
 
     let client = Arc::new(client);
 
-    let client_ = client.clone();
-    let messages_ = messages.clone();
-    let topology_ = topology.clone();
+    let in_msg: JoinHandle<Result<()>>;
+    {
+        let client = client.clone();
+        let messages = messages.clone();
+        let topology = topology.clone();
 
-    let in_msg: JoinHandle<Result<()>> = tokio::spawn(async move {
-        while let Some(msg) = in_rx.recv().await {
-            process_in_msg(msg, client_.clone(), messages_.clone(), topology_.clone())?;
-        }
+        in_msg = tokio::spawn(async move {
+            while let Some(msg) = in_rx.recv().await {
+                process_in_msg(msg, client.clone(), messages.clone(), topology.clone())?;
+            }
 
-        Ok(())
-    });
+            Ok(())
+        });
+    }
 
-    let client_ = client.clone();
-    let messages_ = messages.clone();
-    let topology_ = topology.clone();
+    let out_msg: JoinHandle<Result<()>>;
+    {
+        let client = client.clone();
+        let messages = messages.clone();
+        let topology = topology.clone();
 
-    let out_msg: JoinHandle<Result<()>> = tokio::spawn(async move {
-        while let Some(msg) = out_rx.recv().await {
-            process_out_msg(msg, client_.clone(), messages_.clone(), topology_.clone())?;
-        }
+        out_msg = tokio::spawn(async move {
+            while let Some(msg) = out_rx.recv().await {
+                process_out_msg(msg, client.clone(), messages.clone(), topology.clone())?;
+            }
 
-        Ok(())
-    });
+            Ok(())
+        });
+    }
 
     let run_client: JoinHandle<Result<()>> = tokio::task::spawn_blocking(move || {
         client
