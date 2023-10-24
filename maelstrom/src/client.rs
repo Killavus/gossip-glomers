@@ -42,6 +42,13 @@ pub struct Client {
 }
 
 impl Client {
+    pub fn node_id(&self) -> &str {
+        match &self.state {
+            ClientState::Init { node_id, .. } => node_id,
+            _ => panic!("Client not initialized"),
+        }
+    }
+
     pub fn init(&mut self) -> Result<()> {
         if matches!(self.state, ClientState::Init { .. }) {
             anyhow::bail!("Client already initialized");
